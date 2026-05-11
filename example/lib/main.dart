@@ -186,9 +186,8 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
                 children: [
                   _buildSelectionPage(
                     title: "Hardware",
-                    subtitle: "Scan and select your USB device",
+                    subtitle: "Select your active USB device",
                     items: _devices,
-                    showRefresh: true, // Specific flag for the first page
                     onSelect: (val) async {
                       _selectedDevice = val;
                       _formats = await _cameraPlugin.getCameraMetadata(val);
@@ -240,7 +239,6 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          // Back Button
           _currentStep > 0
               ? IconButton(
                   onPressed: _prevPage,
@@ -257,7 +255,6 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
               color: Colors.cyanAccent,
             ),
           ),
-          // Top Refresh Button (Only on Step 0)
           _currentStep == 0
               ? IconButton(
                   onPressed: _refreshDevices,
@@ -304,7 +301,6 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
     required List<dynamic>? items,
     required Function(dynamic) onSelect,
     String Function(dynamic)? label,
-    bool showRefresh = false,
   }) {
     return Padding(
       padding: const EdgeInsets.all(32.0),
@@ -329,17 +325,10 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
           const SizedBox(height: 30),
           Expanded(
             child: ListView.separated(
-              itemCount: (items?.length ?? 0) + (showRefresh ? 1 : 0),
+              itemCount: items?.length ?? 0,
               separatorBuilder: (_, __) => const SizedBox(height: 12),
               itemBuilder: (context, index) {
-                // If showRefresh is true, put a "Scan for Devices" tile at the top
-                if (showRefresh && index == 0) {
-                  return _buildRefreshTile();
-                }
-
-                final actualIndex = showRefresh ? index - 1 : index;
-                final item = items![actualIndex];
-
+                final item = items![index];
                 return ClipRRect(
                   borderRadius: BorderRadius.circular(16),
                   child: BackdropFilter(
@@ -369,37 +358,6 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _buildRefreshTile() {
-    return InkWell(
-      onTap: _refreshDevices,
-      borderRadius: BorderRadius.circular(16),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          border: Border.all(color: Colors.cyanAccent.withOpacity(0.2)),
-          borderRadius: BorderRadius.circular(16),
-          color: Colors.cyanAccent.withOpacity(0.02),
-        ),
-        child: const Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(Icons.sync, color: Colors.cyanAccent, size: 18),
-            SizedBox(width: 10),
-            Text(
-              "SCAN FOR NEW HARDWARE",
-              style: TextStyle(
-                color: Colors.cyanAccent,
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
-                letterSpacing: 1,
-              ),
-            ),
-          ],
-        ),
       ),
     );
   }
