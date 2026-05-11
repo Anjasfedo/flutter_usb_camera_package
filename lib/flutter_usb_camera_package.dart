@@ -32,4 +32,8 @@ class FlutterUsbCameraPackage {
   Future<Map<dynamic, dynamic>> getPerformanceMetrics() {
     return FlutterUsbCameraPackagePlatform.instance.getPerformanceMetrics();
   }
+
+  Future<void> stopStream() {
+    return FlutterUsbCameraPackagePlatform.instance.stopStream();
+  }
 }

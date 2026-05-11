@@ -14,10 +14,6 @@
         padding: 20px;
       }
 
-      h2 {
-        margin-bottom: 10px;
-      }
-
       .server-box,
       .controls,
       .metrics-box {
@@ -29,8 +25,7 @@
         text-align: left;
       }
 
-      .controls label,
-      .server-box label {
+      label {
         display: block;
         margin-top: 10px;
         margin-bottom: 4px;
@@ -44,7 +39,7 @@
         margin: 4px 0;
         border-radius: 4px;
         border: none;
-        min-width: 320px;
+        min-width: 340px;
         box-sizing: border-box;
       }
 
@@ -118,11 +113,11 @@
 
     <div class="server-box">
       <label>Server URL</label>
-      <input id="serverUrl" value="http://192.168.10.105:3000" />
+      <input id="serverUrl" value="http://192.168.1.105:3000" />
 
       <button onclick="loadCapabilities()">Load Camera</button>
 
-      <div class="status" id="statusText">Not connected.</div>
+      <div class="status" id="statusText">Ready.</div>
     </div>
 
     <br />
@@ -141,7 +136,13 @@
       <button id="connectBtn" onclick="startStream()" disabled>
         Start Stream
       </button>
-      <button id="stopBtn" onclick="stopStream()" disabled>Stop Stream</button>
+      <button
+        id="stopBtn"
+        onclick="stopStream({ keepSelection: true, callServerStop: true })"
+        disabled
+      >
+        Stop Stream
+      </button>
     </div>
 
     <div class="video-container">
@@ -169,12 +170,19 @@
     </div>
 
     <script>
-      const DEFAULT_SERVER = "http://192.168.10.105:3000";
+      const DEFAULT_SERVER = "http://192.168.1.105:3000";
 
       let allCapabilities = [];
       let pc = null;
+      let currentSessionId = null;
+
       let statsInterval = null;
       let metricsInterval = null;
+      let isNegotiating = false;
+
+      function sleep(ms) {
+        return new Promise((resolve) => setTimeout(resolve, ms));
+      }
 
       function serverUrl() {
         return document.getElementById("serverUrl").value.replace(/\/$/, "");
@@ -190,6 +198,7 @@
         const option = document.createElement("option");
         option.value = "";
         option.textContent = placeholder;
+
         select.appendChild(option);
       }
 
@@ -198,12 +207,39 @@
 
         for (const item of items) {
           const key = keyFn(item);
+
           if (!map.has(key)) {
             map.set(key, item);
           }
         }
 
         return Array.from(map.values());
+      }
+
+      function hasCompleteSelection() {
+        return Boolean(document.getElementById("fpsSelect").value);
+      }
+
+      function updateButtons() {
+        const connectBtn = document.getElementById("connectBtn");
+        const stopBtn = document.getElementById("stopBtn");
+
+        if (isNegotiating) {
+          connectBtn.disabled = true;
+          connectBtn.innerText = "Negotiating...";
+          stopBtn.disabled = false;
+          return;
+        }
+
+        connectBtn.disabled = !hasCompleteSelection();
+
+        if (pc) {
+          connectBtn.innerText = "Restart Stream";
+          stopBtn.disabled = false;
+        } else {
+          connectBtn.innerText = "Start Stream";
+          stopBtn.disabled = true;
+        }
       }
 
       function formatLabel(cap) {
@@ -215,31 +251,30 @@
         return `${cap.width}x${cap.height}`;
       }
 
-      function fpsValue(cap) {
-        return `${cap.fps_num}/${cap.fps_den}`;
-      }
-
       function fpsLabel(cap) {
         const fps = cap.fps_num / cap.fps_den;
         return `${cap.fps_num}/${cap.fps_den} FPS (${fps.toFixed(2)})`;
       }
 
       async function loadCapabilities() {
-        stopStream();
+        await stopStream({
+          keepSelection: false,
+          callServerStop: true,
+        });
 
         const formatSelect = document.getElementById("formatSelect");
         const resolutionSelect = document.getElementById("resolutionSelect");
         const fpsSelect = document.getElementById("fpsSelect");
-        const connectBtn = document.getElementById("connectBtn");
 
         formatSelect.disabled = true;
         resolutionSelect.disabled = true;
         fpsSelect.disabled = true;
-        connectBtn.disabled = true;
 
         clearSelect(formatSelect, "Loading formats...");
         clearSelect(resolutionSelect, "Choose video format first");
         clearSelect(fpsSelect, "Choose resolution first");
+
+        updateButtons();
 
         setStatus(`Loading capabilities from ${serverUrl()} ...`);
 
@@ -272,10 +307,12 @@
 
           setStatus(`Loaded ${allCapabilities.length} camera modes.`);
           startMetricsPolling();
+          updateButtons();
         } catch (err) {
           console.error(err);
           setStatus(`Failed to load capabilities:\n${err.message}`);
           clearSelect(formatSelect, "Failed to load formats");
+          updateButtons();
         }
       }
 
@@ -309,13 +346,43 @@
           formatSelect.appendChild(option);
         }
 
-        formatSelect.onchange = populateResolutions;
-        resolutionSelect.onchange = populateFps;
+        formatSelect.onchange = async () => {
+          await handleModeChanged("Video format changed.");
+          populateResolutions();
+          updateButtons();
+        };
+
+        resolutionSelect.onchange = async () => {
+          await handleModeChanged("Resolution changed.");
+          populateFps();
+          updateButtons();
+        };
+
+        fpsSelect.onchange = async () => {
+          await handleModeChanged("FPS changed.");
+          updateButtons();
+        };
+      }
+
+      async function handleModeChanged(reason) {
+        if (pc || currentSessionId) {
+          await stopStream({
+            keepSelection: true,
+            callServerStop: true,
+          });
+
+          setStatus(
+            `${reason}\nOld stream stopped. Click Start Stream to open a new pipeline.`,
+          );
+        }
       }
 
       function selectedFormatFilter(cap) {
         const selected = document.getElementById("formatSelect").value;
-        if (!selected) return false;
+
+        if (!selected) {
+          return false;
+        }
 
         const fmt = JSON.parse(selected);
 
@@ -330,11 +397,9 @@
       function populateResolutions() {
         const resolutionSelect = document.getElementById("resolutionSelect");
         const fpsSelect = document.getElementById("fpsSelect");
-        const connectBtn = document.getElementById("connectBtn");
 
         resolutionSelect.disabled = true;
         fpsSelect.disabled = true;
-        connectBtn.disabled = true;
 
         clearSelect(resolutionSelect, "Choose resolution");
         clearSelect(fpsSelect, "Choose resolution first");
@@ -364,10 +429,15 @@
       }
 
       function selectedResolutionFilter(cap) {
-        if (!selectedFormatFilter(cap)) return false;
+        if (!selectedFormatFilter(cap)) {
+          return false;
+        }
 
         const selected = document.getElementById("resolutionSelect").value;
-        if (!selected) return false;
+
+        if (!selected) {
+          return false;
+        }
 
         const res = JSON.parse(selected);
 
@@ -376,11 +446,8 @@
 
       function populateFps() {
         const fpsSelect = document.getElementById("fpsSelect");
-        const connectBtn = document.getElementById("connectBtn");
 
         fpsSelect.disabled = true;
-        connectBtn.disabled = true;
-
         clearSelect(fpsSelect, "Choose FPS");
 
         const capsForResolution = allCapabilities.filter(
@@ -404,33 +471,40 @@
         }
 
         fpsSelect.disabled = fpsModes.length === 0;
-        connectBtn.disabled = fpsModes.length === 0;
-
-        fpsSelect.onchange = () => {
-          connectBtn.disabled = !fpsSelect.value;
-        };
       }
 
       async function startStream() {
-        stopStream();
-
-        const fpsSelect = document.getElementById("fpsSelect");
-        const connectBtn = document.getElementById("connectBtn");
-        const stopBtn = document.getElementById("stopBtn");
-
-        if (!fpsSelect.value) {
-          setStatus("Please choose video format, resolution, and FPS first.");
+        if (isNegotiating) {
           return;
         }
 
-        const selectedCap = JSON.parse(fpsSelect.value);
+        if (!hasCompleteSelection()) {
+          setStatus("Please choose video format, resolution, and FPS first.");
+          updateButtons();
+          return;
+        }
 
-        connectBtn.disabled = true;
-        stopBtn.disabled = false;
-        connectBtn.innerText = "Negotiating...";
+        const selectedCap = JSON.parse(
+          document.getElementById("fpsSelect").value,
+        );
+
+        isNegotiating = true;
+        updateButtons();
+
+        await stopStream({
+          keepSelection: true,
+          callServerStop: true,
+          silent: true,
+        });
+
+        // Give the server/GStreamer a short moment to release /dev/video0.
+        await sleep(700);
+
+        isNegotiating = true;
+        updateButtons();
 
         setStatus(
-          `Starting stream:\n` +
+          `Starting new pipeline:\n` +
             `${selectedCap.format} / ${selectedCap.media_type}\n` +
             `${selectedCap.width}x${selectedCap.height} @ ${selectedCap.fps_num}/${selectedCap.fps_den} FPS`,
         );
@@ -439,27 +513,35 @@
           pc = new RTCPeerConnection();
 
           pc.ontrack = (event) => {
-            document.getElementById("videoElement").srcObject =
-              event.streams[0];
+            const video = document.getElementById("videoElement");
+            video.srcObject = event.streams[0];
 
-            connectBtn.innerText = "Connected";
             document.getElementById("statsOverlay").style.display = "block";
+
+            isNegotiating = false;
+            updateButtons();
 
             setStatus("Stream connected.");
             startStatsTracking();
           };
 
           pc.onconnectionstatechange = () => {
-            setStatus(`WebRTC state: ${pc.connectionState}`);
+            if (!pc) {
+              return;
+            }
+
+            const state = pc.connectionState;
+            setStatus(`WebRTC state: ${state}`);
 
             if (
-              pc.connectionState === "failed" ||
-              pc.connectionState === "closed" ||
-              pc.connectionState === "disconnected"
+              state === "failed" ||
+              state === "closed" ||
+              state === "disconnected"
             ) {
-              connectBtn.innerText = "Start Stream";
-              connectBtn.disabled = false;
-              stopBtn.disabled = true;
+              stopStream({
+                keepSelection: true,
+                callServerStop: true,
+              });
             }
           };
 
@@ -498,36 +580,84 @@
 
           const answer = await response.json();
 
+          // Works even if server does not yet return session_id.
+          currentSessionId = answer.session_id || null;
+
           await pc.setRemoteDescription(new RTCSessionDescription(answer));
+
+          isNegotiating = false;
+          updateButtons();
         } catch (err) {
           console.error(err);
 
           setStatus(`Failed to start stream:\n${err.message}`);
 
-          connectBtn.innerText = "Start Stream";
-          connectBtn.disabled = false;
-          stopBtn.disabled = true;
+          isNegotiating = false;
 
-          stopStream();
+          await stopStream({
+            keepSelection: true,
+            callServerStop: true,
+            silent: true,
+          });
+
+          updateButtons();
         }
       }
 
-      function stopStream() {
+      async function stopStream(options = {}) {
+        const {
+          keepSelection = true,
+          callServerStop = true,
+          silent = false,
+        } = options;
+
         if (statsInterval) {
           clearInterval(statsInterval);
           statsInterval = null;
         }
 
+        const sessionToStop = currentSessionId;
+        currentSessionId = null;
+
+        if (callServerStop && sessionToStop) {
+          try {
+            await fetch(`${serverUrl()}/stop`, {
+              method: "POST",
+              headers: {
+                "Content-Type": "application/json",
+              },
+              body: JSON.stringify({
+                session_id: sessionToStop,
+              }),
+            });
+          } catch (err) {
+            // Safe to ignore. Older server code may not have /stop yet.
+            console.warn("Server /stop unavailable or failed:", err);
+          }
+        }
+
         if (pc) {
-          pc.getSenders().forEach((sender) => {
-            if (sender.track) sender.track.stop();
-          });
+          try {
+            pc.ontrack = null;
+            pc.onconnectionstatechange = null;
 
-          pc.getReceivers().forEach((receiver) => {
-            if (receiver.track) receiver.track.stop();
-          });
+            pc.getSenders().forEach((sender) => {
+              if (sender.track) {
+                sender.track.stop();
+              }
+            });
 
-          pc.close();
+            pc.getReceivers().forEach((receiver) => {
+              if (receiver.track) {
+                receiver.track.stop();
+              }
+            });
+
+            pc.close();
+          } catch (err) {
+            console.warn("Error while closing PeerConnection:", err);
+          }
+
           pc = null;
         }
 
@@ -538,12 +668,37 @@
           video.srcObject = null;
         }
 
+        video.removeAttribute("src");
+        video.load();
+
         document.getElementById("statsOverlay").style.display = "none";
 
-        document.getElementById("connectBtn").innerText = "Start Stream";
-        document.getElementById("connectBtn").disabled =
-          !document.getElementById("fpsSelect").value;
-        document.getElementById("stopBtn").disabled = true;
+        if (!keepSelection) {
+          clearSelect(
+            document.getElementById("formatSelect"),
+            "Click Load Camera first",
+          );
+          clearSelect(
+            document.getElementById("resolutionSelect"),
+            "Choose video format first",
+          );
+          clearSelect(
+            document.getElementById("fpsSelect"),
+            "Choose resolution first",
+          );
+
+          document.getElementById("formatSelect").disabled = true;
+          document.getElementById("resolutionSelect").disabled = true;
+          document.getElementById("fpsSelect").disabled = true;
+        }
+
+        isNegotiating = false;
+
+        if (!silent && keepSelection) {
+          setStatus("Stream stopped.");
+        }
+
+        updateButtons();
       }
 
       function startStatsTracking() {
@@ -632,7 +787,6 @@
         }
 
         updateMetrics();
-
         metricsInterval = setInterval(updateMetrics, 5000);
       }
 
@@ -671,7 +825,7 @@
             `Total Video Sent: ${Number(m.total_video_mb_sent || 0).toFixed(1)} MB`;
         } catch (err) {
           document.getElementById("serverCpu").innerText =
-            `CPU: metrics unavailable`;
+            "CPU: metrics unavailable";
         }
       }
 
@@ -691,6 +845,7 @@
           "Choose resolution first",
         );
 
+        updateButtons();
         setStatus(`Ready. Server: ${DEFAULT_SERVER}`);
       };
     </script>

@@ -11,28 +11,34 @@ class FlutterUsbCameraPackageWeb extends FlutterUsbCameraPackagePlatform {
     FlutterUsbCameraPackagePlatform.instance = FlutterUsbCameraPackageWeb();
   }
 
+  final Map<int, web.HTMLVideoElement> _videoElements = {};
   final Map<int, web.MediaStream> _streams = {};
-  int _viewCounter = 0;
-
   final Map<String, String> _labelToId = {};
+  int _viewCounter = 0;
 
   @override
   Future<List<dynamic>> listDevices() async {
-    final devices = await web.window.navigator.mediaDevices
-        .enumerateDevices()
-        .toDart;
-    final labels = <String>[];
+    try {
+      final devices = await web.window.navigator.mediaDevices
+          .enumerateDevices()
+          .toDart;
+      final labels = <String>[];
+      _labelToId.clear();
 
-    for (var device in devices.toDart) {
-      if (device.kind == 'videoinput') {
-        final label = device.label.isEmpty
-            ? "Camera ${device.deviceId}"
-            : device.label;
-        labels.add(label);
-        _labelToId[label] = device.deviceId; // Store the mapping
+      for (var i = 0; i < devices.length; i++) {
+        final device = devices.item(i);
+        if (device != null && device.kind == 'videoinput') {
+          final label = device.label.isEmpty
+              ? "Camera ${device.deviceId}"
+              : device.label;
+          labels.add(label);
+          _labelToId[label] = device.deviceId;
+        }
       }
+      return labels;
+    } catch (e) {
+      return ["Default Camera"];
     }
-    return labels;
   }
 
   @override
@@ -63,26 +69,28 @@ class FlutterUsbCameraPackageWeb extends FlutterUsbCameraPackagePlatform {
 
   @override
   Future<int> startStream({
-    required dynamic device, // This is the label from the UI
+    required dynamic device,
     required String format,
     required int width,
     required int height,
     required double fps,
   }) async {
     final viewId = _viewCounter++;
-    final deviceId = _labelToId[device]; // Retrieve the unique ID
+    final viewType = 'usb-camera-view-$viewId';
+    final deviceId = _labelToId[device.toString()];
+
+    final videoConstraints = {
+      'width': {'ideal': width},
+      'height': {'ideal': height},
+      'frameRate': {'ideal': fps},
+    };
+
+    if (deviceId != null && deviceId.isNotEmpty) {
+      videoConstraints['deviceId'] = {'exact': deviceId};
+    }
 
     final constraints =
-        {
-              'video': {
-                'deviceId': {
-                  'exact': deviceId,
-                }, // CRITICAL: Tells the browser exactly which one to open
-                'width': {'ideal': width},
-                'height': {'ideal': height},
-                'frameRate': {'ideal': fps},
-              },
-            }.jsify()
+        {'video': videoConstraints.jsify()}.jsify()
             as web.MediaStreamConstraints;
 
     final stream = await web.window.navigator.mediaDevices
@@ -104,9 +112,28 @@ class FlutterUsbCameraPackageWeb extends FlutterUsbCameraPackagePlatform {
       (int id) => videoElement,
     );
 
+    _videoElements[viewId] = videoElement;
     _streams[viewId] = stream;
 
     return viewId;
+  }
+
+  @override
+  Future<void> stopStream() async {
+    for (var stream in _streams.values) {
+      final tracks = stream.getTracks().toDart;
+      for (var i = 0; i < tracks.length; i++) {
+        final track = tracks.item(i);
+        track?.stop();
+      }
+    }
+    _streams.clear();
+
+    for (var video in _videoElements.values) {
+      video.srcObject = null;
+      video.remove();
+    }
+    _videoElements.clear();
   }
 
   @override

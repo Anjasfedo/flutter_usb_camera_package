@@ -51,4 +51,9 @@ class MethodChannelFlutterUsbCameraPackage
         ) ??
         {};
   }
+
+  @override
+  Future<void> stopStream() async {
+    await methodChannel.invokeMethod<void>('stopStream');
+  }
 }

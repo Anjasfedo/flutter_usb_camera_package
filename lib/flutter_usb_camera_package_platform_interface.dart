@@ -32,4 +32,8 @@ abstract class FlutterUsbCameraPackagePlatform extends PlatformInterface {
 
   Future<Map<dynamic, dynamic>> getPerformanceMetrics() =>
       throw UnimplementedError();
+
+  Future<void> stopStream() {
+    throw UnimplementedError();
+  }
 }

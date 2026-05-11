@@ -59,9 +59,39 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
     _refreshDevices();
   }
 
+  // 1. Refresh hardware list
   Future<void> _refreshDevices() async {
-    final devices = await _cameraPlugin.listDevices();
-    setState(() => _devices = devices);
+    try {
+      final devices = await _cameraPlugin.listDevices();
+      setState(() {
+        _devices = devices.toSet().toList(); // Force unique names
+      });
+    } catch (e) {
+      debugPrint("Device Scan Error: $e");
+    }
+  }
+
+  // 2. Fetch and Filter Metadata
+  Future<void> _fetchMetadata(dynamic device) async {
+    try {
+      final List<dynamic> metadata = await _cameraPlugin.getCameraMetadata(
+        device,
+      );
+      setState(() {
+        // Filter out duplicate formats (e.g. if OS reports YUY2 twice)
+        final seen = <String>{};
+        _formats = metadata
+            .where((item) => seen.add(item['format'].toString()))
+            .toList();
+        _selectedDevice = device;
+      });
+      _nextPage();
+    } catch (e) {
+      debugPrint("Metadata Error: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text("Failed to probe camera capabilities")),
+      );
+    }
   }
 
   void _nextPage() => _pageController.nextPage(
@@ -74,7 +104,14 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
     curve: Curves.easeOutCubic,
   );
 
-  void _reset() {
+  Future<void> _reset() async {
+    try {
+      // 1. Tell the native side to kill the pipeline/hardware lock
+      await _cameraPlugin.stopStream();
+    } catch (e) {
+      debugPrint("Error stopping stream: $e");
+    }
+
     setState(() {
       _isStreaming = false;
       _textureId = null;
@@ -83,7 +120,9 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
       _selectedFormat = null;
       _selectedResolution = null;
       _selectedFps = null;
+      _currentFps = 0.0; // Reset metrics too
     });
+
     _metricsTimer?.cancel();
     _pageController.jumpToPage(0);
     _refreshDevices();
@@ -104,7 +143,7 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
       });
       _startMetrics();
     } catch (e) {
-      debugPrint("Error: $e");
+      debugPrint("Streaming Error: $e");
     }
   }
 
@@ -115,9 +154,9 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
     ) async {
       final m = await _cameraPlugin.getPerformanceMetrics();
       setState(() {
-        _currentFps = m['fps'];
-        _width = m['width'];
-        _height = m['height'];
+        _currentFps = (m['fps'] as num).toDouble();
+        _width = m['width'] as int;
+        _height = m['height'] as int;
       });
     });
   }
@@ -127,6 +166,7 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
     return Scaffold(
       body: Stack(
         children: [
+          // Background Gradient
           Positioned.fill(
             child: Container(
               decoration: const BoxDecoration(
@@ -138,6 +178,8 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
               ),
             ),
           ),
+
+          // Video Texture
           if (_isStreaming && _textureId != null)
             Positioned.fill(
               child: Center(
@@ -149,6 +191,8 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
                 ),
               ),
             ),
+
+          // UI Layer
           Positioned.fill(
             child: AnimatedSwitcher(
               duration: const Duration(milliseconds: 500),
@@ -191,11 +235,8 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
                     title: "Hardware",
                     subtitle: "Select your active USB device",
                     items: _devices,
-                    onSelect: (val) async {
-                      _selectedDevice = val;
-                      _formats = await _cameraPlugin.getCameraMetadata(val);
-                      _nextPage();
-                    },
+                    onSelect: (val) =>
+                        _fetchMetadata(val), // Now calls the separate function
                   ),
                   _buildSelectionPage(
                     title: "Encoding",
@@ -203,7 +244,7 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
                     items: _formats,
                     label: (i) => i['format'],
                     onSelect: (val) {
-                      _selectedFormat = val;
+                      setState(() => _selectedFormat = val);
                       _nextPage();
                     },
                   ),
@@ -213,7 +254,7 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
                     items: _selectedFormat?['resolutions'],
                     label: (i) => "${i['width']}x${i['height']}",
                     onSelect: (val) {
-                      _selectedResolution = val;
+                      setState(() => _selectedResolution = val);
                       _nextPage();
                     },
                   ),
@@ -221,9 +262,9 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
                     title: "Framerate",
                     subtitle: "Finalize temporal resolution",
                     items: _selectedResolution?['fps'],
-                    label: (i) => "${i.toStringAsFixed(0)} FPS",
+                    label: (i) => "${(i as num).toStringAsFixed(0)} FPS",
                     onSelect: (val) {
-                      _selectedFps = val;
+                      _selectedFps = (val as num).toDouble();
                       _startStreaming();
                     },
                   ),
@@ -235,6 +276,8 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
       ),
     );
   }
+
+  // --- UI Helper Widgets (Header, HUD, Metric Chips, etc) ---
 
   Widget _buildHeader() {
     return Padding(

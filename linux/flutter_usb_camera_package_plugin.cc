@@ -315,6 +315,18 @@ static void flutter_usb_camera_package_plugin_handle_method_call(FlutterUsbCamer
     fl_value_set_string_take(metrics, "height", fl_value_new_int(self->video_texture->height));
     fl_method_call_respond(method_call, FL_METHOD_RESPONSE(fl_method_success_response_new(metrics)), nullptr);
   }
+  // Inside flutter_usb_camera_package_plugin_handle_method_call
+  else if (strcmp(method, "stopStream") == 0)
+  {
+    if (self->pipeline)
+    {
+      gst_element_set_state(self->pipeline, GST_STATE_NULL); // Stop sensor
+      gst_object_unref(self->pipeline);
+      self->pipeline = nullptr;
+    }
+    fl_method_call_respond(method_call,
+                           FL_METHOD_RESPONSE(fl_method_success_response_new(nullptr)), nullptr);
+  }
   else
   {
     fl_method_call_respond(method_call, FL_METHOD_RESPONSE(fl_method_not_implemented_response_new()), nullptr);
