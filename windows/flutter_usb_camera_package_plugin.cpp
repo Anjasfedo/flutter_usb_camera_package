@@ -216,7 +216,7 @@ namespace flutter_usb_camera_package
         return;
       }
 
-      // Safely extract parameters
+      // 1. Safely extract parameters
       std::string device_name = std::get<std::string>(args->at(flutter::EncodableValue("device")));
       std::string format = std::get<std::string>(args->at(flutter::EncodableValue("format")));
       int width = std::get<int>(args->at(flutter::EncodableValue("width")));
@@ -224,6 +224,7 @@ namespace flutter_usb_camera_package
       double fps_raw = std::get<double>(args->at(flutter::EncodableValue("fps")));
       int fps = static_cast<int>(fps_raw);
 
+      // 2. Texture Registration (Only if not already registered)
       if (texture_id_ == -1)
       {
         texture_ = std::make_unique<flutter::TextureVariant>(
@@ -238,16 +239,27 @@ namespace flutter_usb_camera_package
         texture_id_ = texture_registrar_->RegisterTexture(texture_.get());
       }
 
-      // Windows Pipeline using mfvideosrc (Media Foundation)
-      std::string pipe_str = "mfvideosrc ! video/x-raw,width=" + std::to_string(width) +
-                             ",height=" + std::to_string(height) + ",framerate=" + std::to_string(fps) + "/1 ! " +
-                             "videoconvert ! video/x-raw,format=RGBA ! appsink name=mysink emit-signals=true";
-
+      // 3. Clean up existing pipeline before starting a new one
       if (pipeline_)
       {
         gst_element_set_state(pipeline_, GST_STATE_NULL);
         gst_object_unref(pipeline_);
+        pipeline_ = nullptr;
       }
+
+      // 4. Build the dynamic pipeline string
+      // device-name=\"" + device_name + "\" ensures we open the specific hardware selected.
+      // we check the format to decide whether to use image/jpeg (MJPG) or video/x-raw (YUY2).
+      std::string caps_type = (format == "MJPG" || format == "image/jpeg") ? "image/jpeg" : "video/x-raw";
+
+      std::stringstream ss;
+      ss << "mfvideosrc device-name=\"" << device_name << "\" ! "
+         << caps_type << ",width=" << width << ",height=" << height << ",framerate=" << fps << "/1 ! "
+         << (caps_type == "image/jpeg" ? "jpegdec ! " : "")
+         << "videoconvert ! video/x-raw,format=RGBA ! "
+         << "appsink name=mysink emit-signals=true max-buffers=1 drop=true";
+
+      std::string pipe_str = ss.str();
 
       GError *error = NULL;
       pipeline_ = gst_parse_launch(pipe_str.c_str(), &error);
@@ -259,11 +271,14 @@ namespace flutter_usb_camera_package
         return;
       }
 
+      // 5. Connect the Sink Signal
       GstElement *sink = gst_bin_get_by_name(GST_BIN(pipeline_), "mysink");
       g_signal_connect(sink, "new-sample", G_CALLBACK(on_new_sample), this);
       gst_object_unref(sink);
 
+      // 6. Engage the hardware
       gst_element_set_state(pipeline_, GST_STATE_PLAYING);
+
       result->Success(flutter::EncodableValue(texture_id_));
     }
     else if (method_call.method_name().compare("getPerformanceMetrics") == 0)

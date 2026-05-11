@@ -14,23 +14,25 @@ class FlutterUsbCameraPackageWeb extends FlutterUsbCameraPackagePlatform {
   final Map<int, web.MediaStream> _streams = {};
   int _viewCounter = 0;
 
+  final Map<String, String> _labelToId = {};
+
   @override
   Future<List<dynamic>> listDevices() async {
-    try {
-      final devices = await web.window.navigator.mediaDevices
-          .enumerateDevices()
-          .toDart;
-      return devices.toDart
-          .where((device) => device.kind == 'videoinput')
-          .map(
-            (device) => device.label.isEmpty
-                ? "Camera ${device.deviceId}"
-                : device.label,
-          )
-          .toList();
-    } catch (e) {
-      return ["Default Camera"];
+    final devices = await web.window.navigator.mediaDevices
+        .enumerateDevices()
+        .toDart;
+    final labels = <String>[];
+
+    for (var device in devices.toDart) {
+      if (device.kind == 'videoinput') {
+        final label = device.label.isEmpty
+            ? "Camera ${device.deviceId}"
+            : device.label;
+        labels.add(label);
+        _labelToId[label] = device.deviceId; // Store the mapping
+      }
     }
+    return labels;
   }
 
   @override
@@ -61,18 +63,21 @@ class FlutterUsbCameraPackageWeb extends FlutterUsbCameraPackagePlatform {
 
   @override
   Future<int> startStream({
-    required dynamic device,
+    required dynamic device, // This is the label from the UI
     required String format,
     required int width,
     required int height,
     required double fps,
   }) async {
     final viewId = _viewCounter++;
-    final viewType = 'usb-camera-view-$viewId';
+    final deviceId = _labelToId[device]; // Retrieve the unique ID
 
     final constraints =
         {
               'video': {
+                'deviceId': {
+                  'exact': deviceId,
+                }, // CRITICAL: Tells the browser exactly which one to open
                 'width': {'ideal': width},
                 'height': {'ideal': height},
                 'frameRate': {'ideal': fps},

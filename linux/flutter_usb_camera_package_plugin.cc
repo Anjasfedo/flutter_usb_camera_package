@@ -236,36 +236,76 @@ static void flutter_usb_camera_package_plugin_handle_method_call(FlutterUsbCamer
   }
   else if (strcmp(method, "startStream") == 0)
   {
+    // 1. Clean up existing pipeline to release hardware lock
     if (self->pipeline)
     {
       gst_element_set_state(self->pipeline, GST_STATE_NULL);
       gst_object_unref(self->pipeline);
+      self->pipeline = nullptr;
     }
-    const gchar *dev = fl_value_get_string(fl_value_lookup_string(args, "device"));
-    const gchar *fmt = fl_value_get_string(fl_value_lookup_string(args, "format"));
-    int w = fl_value_get_int(fl_value_lookup_string(args, "width"));
-    int h = fl_value_get_int(fl_value_lookup_string(args, "height"));
-    int fps = (int)fl_value_get_float(fl_value_lookup_string(args, "fps"));
 
-    std::string caps = (std::string(fmt) == "MJPG")
-                           ? "image/jpeg,width=" + std::to_string(w) + ",height=" + std::to_string(h) + ",framerate=" + std::to_string(fps) + "/1"
-                           : "video/x-raw,width=" + std::to_string(w) + ",height=" + std::to_string(h) + ",framerate=" + std::to_string(fps) + "/1";
+    // 2. Extract arguments
+    FlValue *device_val = fl_value_lookup_string(args, "device");
+    FlValue *format_val = fl_value_lookup_string(args, "format");
+    FlValue *width_val = fl_value_lookup_string(args, "width");
+    FlValue *height_val = fl_value_lookup_string(args, "height");
+    FlValue *fps_val = fl_value_lookup_string(args, "fps");
 
-    std::string pipe_str = "v4l2src device=" + std::string(dev) + " ! " + caps + " ! " +
-                           (std::string(fmt) == "MJPG" ? "jpegdec ! " : "") + "videoconvert ! video/x-raw,format=RGBA ! appsink name=mysink emit-signals=true max-buffers=1 drop=true";
+    const gchar *dev = fl_value_get_string(device_val);
+    const gchar *fmt = fl_value_get_string(format_val);
+    int w = fl_value_get_int(width_val);
+    int h = fl_value_get_int(height_val);
 
-    self->pipeline = gst_parse_launch(pipe_str.c_str(), nullptr);
+    // Handle float or int for FPS to prevent crashes
+    int fps = (fl_value_get_type(fps_val) == FL_VALUE_TYPE_FLOAT)
+                  ? (int)fl_value_get_float(fps_val)
+                  : (int)fl_value_get_int(fps_val);
+
+    // 3. Build Caps String
+    // For 4K, we use video/x-raw for YUYV and image/jpeg for MJPG
+    std::string caps_base = (std::string(fmt) == "MJPG") ? "image/jpeg" : "video/x-raw";
+    std::string caps = caps_base + ",width=" + std::to_string(w) +
+                       ",height=" + std::to_string(h) +
+                       ",framerate=" + std::to_string(fps) + "/1";
+
+    // 4. Build Pipeline String
+    // Added 'io-mode=4' (mmap) for better 4K performance on Linux
+    // Added 'max-buffers=1 drop=true' to appsink to ensure lowest latency
+    std::string pipe_str = "v4l2src device=" + std::string(dev) + " io-mode=4 ! " +
+                           caps + " ! " +
+                           (std::string(fmt) == "MJPG" ? "jpegdec ! " : "") +
+                           "videoconvert ! video/x-raw,format=RGBA ! " +
+                           "appsink name=mysink emit-signals=true max-buffers=1 drop=true";
+
+    GError *error = nullptr;
+    self->pipeline = gst_parse_launch(pipe_str.c_str(), &error);
+
+    if (error)
+    {
+      fl_method_call_respond(method_call,
+                             FL_METHOD_RESPONSE(fl_method_error_response_new("GSTREAMER_ERROR", error->message, nullptr)),
+                             nullptr);
+      g_error_free(error);
+      return;
+    }
+
     GstElement *sink = gst_bin_get_by_name(GST_BIN(self->pipeline), "mysink");
     g_signal_connect(sink, "new-sample", G_CALLBACK(on_new_sample), self);
     gst_object_unref(sink);
 
+    // 5. Register Texture if not already done
     if (!self->is_texture_registered)
     {
       fl_texture_registrar_register_texture(self->texture_registrar, FL_TEXTURE(self->video_texture));
       self->is_texture_registered = TRUE;
     }
+
     gst_element_set_state(self->pipeline, GST_STATE_PLAYING);
-    fl_method_call_respond(method_call, FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_int((int64_t)self->video_texture))), nullptr);
+
+    // Respond with the texture ID
+    fl_method_call_respond(method_call,
+                           FL_METHOD_RESPONSE(fl_method_success_response_new(fl_value_new_int((int64_t)self->video_texture))),
+                           nullptr);
   }
   else if (strcmp(method, "getPerformanceMetrics") == 0)
   {
