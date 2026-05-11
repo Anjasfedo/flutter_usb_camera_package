@@ -34,9 +34,11 @@ class CameraOnboardingPage extends StatefulWidget {
   State<CameraOnboardingPage> createState() => _CameraOnboardingPageState();
 }
 
-class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
+class _CameraOnboardingPageState extends State<CameraOnboardingPage>
+    with SingleTickerProviderStateMixin {
   final _cameraPlugin = FlutterUsbCameraPackage();
   final PageController _pageController = PageController();
+
   int _currentStep = 0;
 
   List<dynamic> _devices = [];
@@ -53,64 +55,105 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
   int _height = 0;
   Timer? _metricsTimer;
 
+  FragmentProgram? _shaderProgram;
+  late final AnimationController _shaderClock;
+  bool _shaderEnabled = true;
+
   @override
   void initState() {
     super.initState();
+
+    _shaderClock = AnimationController(
+      vsync: this,
+      duration: const Duration(seconds: 60),
+    )..repeat();
+
+    _loadShader();
     _refreshDevices();
   }
 
-  // 1. Refresh hardware list
+  Future<void> _loadShader() async {
+    try {
+      final program = await FragmentProgram.fromAsset(
+        'shaders/camera_overlay.frag',
+      );
+
+      if (!mounted) return;
+
+      setState(() {
+        _shaderProgram = program;
+      });
+    } catch (e) {
+      debugPrint("Shader Load Error: $e");
+    }
+  }
+
   Future<void> _refreshDevices() async {
     try {
       final devices = await _cameraPlugin.listDevices();
+
+      if (!mounted) return;
+
       setState(() {
-        _devices = devices.toSet().toList(); // Force unique names
+        _devices = devices.toSet().toList();
       });
     } catch (e) {
       debugPrint("Device Scan Error: $e");
     }
   }
 
-  // 2. Fetch and Filter Metadata
   Future<void> _fetchMetadata(dynamic device) async {
     try {
       final List<dynamic> metadata = await _cameraPlugin.getCameraMetadata(
         device,
       );
+
+      if (!mounted) return;
+
       setState(() {
-        // Filter out duplicate formats (e.g. if OS reports YUY2 twice)
         final seen = <String>{};
         _formats = metadata
             .where((item) => seen.add(item['format'].toString()))
             .toList();
         _selectedDevice = device;
       });
+
       _nextPage();
     } catch (e) {
       debugPrint("Metadata Error: $e");
+
+      if (!mounted) return;
+
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text("Failed to probe camera capabilities")),
       );
     }
   }
 
-  void _nextPage() => _pageController.nextPage(
-    duration: const Duration(milliseconds: 400),
-    curve: Curves.easeOutCubic,
-  );
+  void _nextPage() {
+    _pageController.nextPage(
+      duration: const Duration(milliseconds: 400),
+      curve: Curves.easeOutCubic,
+    );
+  }
 
-  void _prevPage() => _pageController.previousPage(
-    duration: const Duration(milliseconds: 400),
-    curve: Curves.easeOutCubic,
-  );
+  void _prevPage() {
+    _pageController.previousPage(
+      duration: const Duration(milliseconds: 400),
+      curve: Curves.easeOutCubic,
+    );
+  }
 
   Future<void> _reset() async {
     try {
-      // 1. Tell the native side to kill the pipeline/hardware lock
       await _cameraPlugin.stopStream();
     } catch (e) {
       debugPrint("Error stopping stream: $e");
     }
+
+    _metricsTimer?.cancel();
+
+    if (!mounted) return;
 
     setState(() {
       _isStreaming = false;
@@ -120,10 +163,12 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
       _selectedFormat = null;
       _selectedResolution = null;
       _selectedFps = null;
-      _currentFps = 0.0; // Reset metrics too
+      _currentFps = 0.0;
+      _width = 0;
+      _height = 0;
+      _shaderEnabled = true;
     });
 
-    _metricsTimer?.cancel();
     _pageController.jumpToPage(0);
     _refreshDevices();
   }
@@ -137,10 +182,14 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
         height: _selectedResolution!['height'],
         fps: _selectedFps!,
       );
+
+      if (!mounted) return;
+
       setState(() {
         _textureId = id;
         _isStreaming = true;
       });
+
       _startMetrics();
     } catch (e) {
       debugPrint("Streaming Error: $e");
@@ -149,16 +198,32 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
 
   void _startMetrics() {
     _metricsTimer?.cancel();
+
     _metricsTimer = Timer.periodic(const Duration(milliseconds: 500), (
-      t,
+      timer,
     ) async {
-      final m = await _cameraPlugin.getPerformanceMetrics();
-      setState(() {
-        _currentFps = (m['fps'] as num).toDouble();
-        _width = m['width'] as int;
-        _height = m['height'] as int;
-      });
+      try {
+        final m = await _cameraPlugin.getPerformanceMetrics();
+
+        if (!mounted) return;
+
+        setState(() {
+          _currentFps = (m['fps'] as num).toDouble();
+          _width = m['width'] as int;
+          _height = m['height'] as int;
+        });
+      } catch (e) {
+        debugPrint("Metrics Error: $e");
+      }
     });
+  }
+
+  @override
+  void dispose() {
+    _metricsTimer?.cancel();
+    _pageController.dispose();
+    _shaderClock.dispose();
+    super.dispose();
   }
 
   @override
@@ -184,10 +249,27 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
             Positioned.fill(
               child: Center(
                 child: AspectRatio(
-                  aspectRatio: _width > 0 ? _width / _height : 16 / 9,
+                  aspectRatio: _width > 0 && _height > 0
+                      ? _width / _height
+                      : 16 / 9,
                   child: kIsWeb
                       ? HtmlElementView(viewType: 'usb-camera-view-$_textureId')
                       : Texture(textureId: _textureId!),
+                ),
+              ),
+            ),
+
+          // Shader Overlay Layer
+          if (_isStreaming && _shaderEnabled && _shaderProgram != null)
+            Positioned.fill(
+              child: IgnorePointer(
+                child: CustomPaint(
+                  painter: CameraShaderPainter(
+                    program: _shaderProgram!,
+                    clock: _shaderClock,
+                    fps: _currentFps,
+                    cameraSize: Size(_width.toDouble(), _height.toDouble()),
+                  ),
                 ),
               ),
             ),
@@ -229,14 +311,15 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
               child: PageView(
                 controller: _pageController,
                 physics: const NeverScrollableScrollPhysics(),
-                onPageChanged: (i) => setState(() => _currentStep = i),
+                onPageChanged: (i) {
+                  setState(() => _currentStep = i);
+                },
                 children: [
                   _buildSelectionPage(
                     title: "Hardware",
                     subtitle: "Select your active USB device",
                     items: _devices,
-                    onSelect: (val) =>
-                        _fetchMetadata(val), // Now calls the separate function
+                    onSelect: (val) => _fetchMetadata(val),
                   ),
                   _buildSelectionPage(
                     title: "Encoding",
@@ -276,8 +359,6 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
       ),
     );
   }
-
-  // --- UI Helper Widgets (Header, HUD, Metric Chips, etc) ---
 
   Widget _buildHeader() {
     return Padding(
@@ -321,8 +402,9 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: List.generate(4, (index) {
-        bool active = index == _currentStep;
-        bool completed = index < _currentStep;
+        final active = index == _currentStep;
+        final completed = index < _currentStep;
+
         return AnimatedContainer(
           duration: const Duration(milliseconds: 300),
           margin: const EdgeInsets.symmetric(horizontal: 4),
@@ -331,9 +413,9 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
           decoration: BoxDecoration(
             color: active
                 ? Colors.cyanAccent
-                : (completed
-                      ? Colors.cyanAccent.withOpacity(0.3)
-                      : Colors.white10),
+                : completed
+                ? Colors.cyanAccent.withOpacity(0.3)
+                : Colors.white10,
             borderRadius: BorderRadius.circular(2),
           ),
         );
@@ -375,6 +457,7 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
               separatorBuilder: (_, __) => const SizedBox(height: 12),
               itemBuilder: (context, index) {
                 final item = items![index];
+
                 return ClipRRect(
                   borderRadius: BorderRadius.circular(16),
                   child: BackdropFilter(
@@ -439,6 +522,31 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
                           "RES",
                           "${_width}x$_height",
                           Colors.cyanAccent,
+                        ),
+                        const SizedBox(width: 8),
+                        IconButton(
+                          onPressed: () {
+                            setState(() {
+                              _shaderEnabled = !_shaderEnabled;
+                            });
+                          },
+                          icon: Icon(
+                            _shaderEnabled
+                                ? Icons.visibility
+                                : Icons.visibility_off,
+                            size: 18,
+                          ),
+                          tooltip: _shaderEnabled
+                              ? "Disable shader"
+                              : "Enable shader",
+                          style: IconButton.styleFrom(
+                            backgroundColor: _shaderEnabled
+                                ? Colors.cyanAccent.withOpacity(0.2)
+                                : Colors.white10,
+                            foregroundColor: _shaderEnabled
+                                ? Colors.cyanAccent
+                                : Colors.white54,
+                          ),
                         ),
                         const SizedBox(width: 8),
                         IconButton(
@@ -520,5 +628,53 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
         ],
       ),
     );
+  }
+}
+
+class CameraShaderPainter extends CustomPainter {
+  CameraShaderPainter({
+    required this.program,
+    required this.clock,
+    required this.fps,
+    required this.cameraSize,
+  }) : super(repaint: clock);
+
+  final FragmentProgram program;
+  final AnimationController clock;
+  final double fps;
+  final Size cameraSize;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final shader = program.fragmentShader();
+
+    final elapsedSeconds =
+        (clock.lastElapsedDuration ?? Duration.zero).inMicroseconds /
+        Duration.microsecondsPerSecond;
+
+    // Uniform order must match shaders/camera_overlay.frag:
+    //
+    // uniform vec2 uSize;        // float 0, 1
+    // uniform float uTime;       // float 2
+    // uniform float uFps;        // float 3
+    // uniform vec2 uCameraSize;  // float 4, 5
+
+    shader.setFloat(0, size.width);
+    shader.setFloat(1, size.height);
+    shader.setFloat(2, elapsedSeconds);
+    shader.setFloat(3, fps);
+    shader.setFloat(4, cameraSize.width);
+    shader.setFloat(5, cameraSize.height);
+
+    final paint = Paint()..shader = shader;
+
+    canvas.drawRect(Offset.zero & size, paint);
+  }
+
+  @override
+  bool shouldRepaint(covariant CameraShaderPainter oldDelegate) {
+    return oldDelegate.program != program ||
+        oldDelegate.fps != fps ||
+        oldDelegate.cameraSize != cameraSize;
   }
 }
