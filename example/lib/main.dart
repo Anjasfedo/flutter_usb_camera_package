@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:ui';
+import 'package:flutter/scheduler.dart';
 import 'package:flutter_usb_camera_package/flutter_usb_camera_package.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
 
@@ -59,6 +60,20 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage>
   late final AnimationController _shaderClock;
   bool _shaderEnabled = true;
 
+  late final TimingsCallback _timingsCallback;
+
+  final List<double> _uiMsSamples = [];
+  final List<double> _rasterMsSamples = [];
+
+  double _avgUiMs = 0.0;
+  double _avgRasterMs = 0.0;
+  double _renderLoadPercent = 0.0;
+  double _flutterRenderFps = 0.0;
+  int _jankFrames = 0;
+
+  int _timedFrameCounter = 0;
+  DateTime _lastTimingSampleAt = DateTime.now();
+
   @override
   void initState() {
     super.initState();
@@ -68,6 +83,7 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage>
       duration: const Duration(seconds: 60),
     )..repeat();
 
+    _startAppPerformanceMetrics();
     _loadShader();
     _refreshDevices();
   }
@@ -86,6 +102,67 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage>
     } catch (e) {
       debugPrint("Shader Load Error: $e");
     }
+  }
+
+  void _startAppPerformanceMetrics() {
+    _timingsCallback = (List<FrameTiming> timings) {
+      if (!mounted || timings.isEmpty) return;
+
+      const frameBudgetMs = 1000.0 / 60.0;
+
+      for (final timing in timings) {
+        final uiMs = timing.buildDuration.inMicroseconds / 1000.0;
+        final rasterMs = timing.rasterDuration.inMicroseconds / 1000.0;
+        final totalMs = timing.totalSpan.inMicroseconds / 1000.0;
+
+        _pushSample(_uiMsSamples, uiMs);
+        _pushSample(_rasterMsSamples, rasterMs);
+
+        if (totalMs > frameBudgetMs) {
+          _jankFrames++;
+        }
+      }
+
+      _timedFrameCounter += timings.length;
+
+      final now = DateTime.now();
+      final elapsedSeconds =
+          now.difference(_lastTimingSampleAt).inMilliseconds / 1000.0;
+
+      if (elapsedSeconds >= 0.5) {
+        final avgUi = _average(_uiMsSamples);
+        final avgRaster = _average(_rasterMsSamples);
+
+        setState(() {
+          _avgUiMs = avgUi;
+          _avgRasterMs = avgRaster;
+          _renderLoadPercent = ((avgUi + avgRaster) / frameBudgetMs * 100.0)
+              .clamp(0.0, 999.0);
+          _flutterRenderFps = _timedFrameCounter / elapsedSeconds;
+        });
+
+        _timedFrameCounter = 0;
+        _lastTimingSampleAt = now;
+      }
+    };
+
+    SchedulerBinding.instance.addTimingsCallback(_timingsCallback);
+  }
+
+  void _pushSample(List<double> samples, double value) {
+    samples.add(value);
+
+    if (samples.length > 120) {
+      samples.removeRange(0, samples.length - 120);
+    }
+  }
+
+  double _average(List<double> values) {
+    if (values.isEmpty) return 0.0;
+
+    final total = values.fold<double>(0.0, (sum, value) => sum + value);
+
+    return total / values.length;
   }
 
   Future<void> _refreshDevices() async {
@@ -167,6 +244,13 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage>
       _width = 0;
       _height = 0;
       _shaderEnabled = true;
+      _jankFrames = 0;
+      _avgUiMs = 0.0;
+      _avgRasterMs = 0.0;
+      _renderLoadPercent = 0.0;
+      _flutterRenderFps = 0.0;
+      _uiMsSamples.clear();
+      _rasterMsSamples.clear();
     });
 
     _pageController.jumpToPage(0);
@@ -220,6 +304,7 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage>
 
   @override
   void dispose() {
+    SchedulerBinding.instance.removeTimingsCallback(_timingsCallback);
     _metricsTimer?.cancel();
     _pageController.dispose();
     _shaderClock.dispose();
@@ -231,7 +316,6 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage>
     return Scaffold(
       body: Stack(
         children: [
-          // Background Gradient
           Positioned.fill(
             child: Container(
               decoration: const BoxDecoration(
@@ -244,7 +328,6 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage>
             ),
           ),
 
-          // Video Texture
           if (_isStreaming && _textureId != null)
             Positioned.fill(
               child: Center(
@@ -259,7 +342,6 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage>
               ),
             ),
 
-          // Shader Overlay Layer
           if (_isStreaming && _shaderEnabled && _shaderProgram != null)
             Positioned.fill(
               child: IgnorePointer(
@@ -274,7 +356,6 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage>
               ),
             ),
 
-          // UI Layer
           Positioned.fill(
             child: AnimatedSwitcher(
               duration: const Duration(milliseconds: 500),
@@ -505,25 +586,49 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage>
                   filter: ImageFilter.blur(sigmaX: 15, sigmaY: 15),
                   child: Container(
                     padding: const EdgeInsets.symmetric(
-                      horizontal: 8,
-                      vertical: 8,
+                      horizontal: 10,
+                      vertical: 10,
                     ),
                     color: Colors.black26,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
+                    child: Wrap(
+                      alignment: WrapAlignment.center,
+                      crossAxisAlignment: WrapCrossAlignment.center,
+                      spacing: 8,
+                      runSpacing: 8,
                       children: [
                         _metricChip(
-                          "FPS",
+                          "CAM FPS",
                           _currentFps.toStringAsFixed(1),
                           Colors.greenAccent,
                         ),
-                        const SizedBox(width: 8),
+                        _metricChip(
+                          "RENDER FPS",
+                          _flutterRenderFps.toStringAsFixed(1),
+                          Colors.lightGreenAccent,
+                        ),
                         _metricChip(
                           "RES",
                           "${_width}x$_height",
                           Colors.cyanAccent,
                         ),
-                        const SizedBox(width: 8),
+                        _metricChip(
+                          "UI",
+                          "${_avgUiMs.toStringAsFixed(1)}ms",
+                          Colors.orangeAccent,
+                        ),
+                        _metricChip(
+                          "GPU",
+                          "${_avgRasterMs.toStringAsFixed(1)}ms",
+                          Colors.purpleAccent,
+                        ),
+                        _metricChip(
+                          "LOAD",
+                          "${_renderLoadPercent.toStringAsFixed(0)}%",
+                          _renderLoadPercent > 90
+                              ? Colors.redAccent
+                              : Colors.yellowAccent,
+                        ),
+                        _metricChip("JANK", "$_jankFrames", Colors.redAccent),
                         IconButton(
                           onPressed: () {
                             setState(() {
@@ -548,7 +653,6 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage>
                                 : Colors.white54,
                           ),
                         ),
-                        const SizedBox(width: 8),
                         IconButton(
                           onPressed: _reset,
                           icon: const Icon(Icons.power_settings_new, size: 18),
@@ -651,13 +755,6 @@ class CameraShaderPainter extends CustomPainter {
     final elapsedSeconds =
         (clock.lastElapsedDuration ?? Duration.zero).inMicroseconds /
         Duration.microsecondsPerSecond;
-
-    // Uniform order must match shaders/camera_overlay.frag:
-    //
-    // uniform vec2 uSize;        // float 0, 1
-    // uniform float uTime;       // float 2
-    // uniform float uFps;        // float 3
-    // uniform vec2 uCameraSize;  // float 4, 5
 
     shader.setFloat(0, size.width);
     shader.setFloat(1, size.height);
