@@ -1,0 +1,698 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Linux WebRTC Streamer</title>
+
+    <style>
+      body {
+        background: #111;
+        color: white;
+        font-family: sans-serif;
+        text-align: center;
+        margin: 0;
+        padding: 20px;
+      }
+
+      h2 {
+        margin-bottom: 10px;
+      }
+
+      .server-box,
+      .controls,
+      .metrics-box {
+        margin: 16px auto;
+        padding: 16px;
+        background: #222;
+        border-radius: 8px;
+        display: inline-block;
+        text-align: left;
+      }
+
+      .controls label,
+      .server-box label {
+        display: block;
+        margin-top: 10px;
+        margin-bottom: 4px;
+        color: #ddd;
+      }
+
+      input,
+      select,
+      button {
+        padding: 10px;
+        margin: 4px 0;
+        border-radius: 4px;
+        border: none;
+        min-width: 320px;
+        box-sizing: border-box;
+      }
+
+      button {
+        background: #007aff;
+        color: white;
+        cursor: pointer;
+        font-weight: bold;
+      }
+
+      button:disabled {
+        background: #555;
+        cursor: not-allowed;
+      }
+
+      .video-container {
+        position: relative;
+        width: 80%;
+        max-width: 1280px;
+        margin: 20px auto;
+      }
+
+      video {
+        width: 100%;
+        background: black;
+        border-radius: 8px;
+      }
+
+      .stats-overlay {
+        position: absolute;
+        top: 10px;
+        left: 10px;
+        background: rgba(0, 0, 0, 0.75);
+        padding: 10px;
+        border-radius: 5px;
+        font-family: monospace;
+        font-size: 14px;
+        text-align: left;
+        pointer-events: none;
+        display: none;
+      }
+
+      .stats-overlay span {
+        display: block;
+        margin-bottom: 5px;
+        color: #00ffcc;
+      }
+
+      .metrics-box {
+        font-family: monospace;
+        min-width: 420px;
+      }
+
+      .metrics-box span {
+        display: block;
+        margin: 5px 0;
+        color: #9be7ff;
+      }
+
+      .status {
+        margin-top: 10px;
+        color: #ffdd77;
+        font-family: monospace;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+
+  <body>
+    <h2>Linux Camera WebRTC Stream</h2>
+
+    <div class="server-box">
+      <label>Server URL</label>
+      <input id="serverUrl" value="http://192.168.10.105:3000" />
+
+      <button onclick="loadCapabilities()">Load Camera</button>
+
+      <div class="status" id="statusText">Not connected.</div>
+    </div>
+
+    <br />
+
+    <div class="controls">
+      <label>1. Video Format</label>
+      <select id="formatSelect" disabled></select>
+
+      <label>2. Resolution</label>
+      <select id="resolutionSelect" disabled></select>
+
+      <label>3. FPS</label>
+      <select id="fpsSelect" disabled></select>
+
+      <br />
+      <button id="connectBtn" onclick="startStream()" disabled>
+        Start Stream
+      </button>
+      <button id="stopBtn" onclick="stopStream()" disabled>Stop Stream</button>
+    </div>
+
+    <div class="video-container">
+      <video id="videoElement" autoplay playsinline controls></video>
+
+      <div class="stats-overlay" id="statsOverlay">
+        <span id="fpsDisplay">Client FPS: 0</span>
+        <span id="rttDisplay">Network RTT: 0 ms</span>
+        <span id="jitterDisplay">Jitter Buffer: 0 ms</span>
+        <span id="resolutionDisplay">Resolution: 0x0</span>
+        <span id="bitrateDisplay">Client Bitrate: 0 Mbps</span>
+      </div>
+    </div>
+
+    <div class="metrics-box">
+      <strong>Server Metrics</strong>
+      <span id="serverCpu">CPU: -</span>
+      <span id="serverMemory">Memory RSS: -</span>
+      <span id="serverThreads">Threads: -</span>
+      <span id="serverPeers">Active Peer Connections: -</span>
+      <span id="serverOutFps">Server Output FPS: -</span>
+      <span id="serverOutMbps">Server Output Mbps: -</span>
+      <span id="serverFrames">Total Frames Sent: -</span>
+      <span id="serverVideoMb">Total Video Sent: -</span>
+    </div>
+
+    <script>
+      const DEFAULT_SERVER = "http://192.168.10.105:3000";
+
+      let allCapabilities = [];
+      let pc = null;
+      let statsInterval = null;
+      let metricsInterval = null;
+
+      function serverUrl() {
+        return document.getElementById("serverUrl").value.replace(/\/$/, "");
+      }
+
+      function setStatus(message) {
+        document.getElementById("statusText").innerText = message;
+      }
+
+      function clearSelect(select, placeholder) {
+        select.innerHTML = "";
+
+        const option = document.createElement("option");
+        option.value = "";
+        option.textContent = placeholder;
+        select.appendChild(option);
+      }
+
+      function uniqueBy(items, keyFn) {
+        const map = new Map();
+
+        for (const item of items) {
+          const key = keyFn(item);
+          if (!map.has(key)) {
+            map.set(key, item);
+          }
+        }
+
+        return Array.from(map.values());
+      }
+
+      function formatLabel(cap) {
+        const description = cap.description ? ` - ${cap.description}` : "";
+        return `${cap.format} / ${cap.media_type}${description}`;
+      }
+
+      function resolutionLabel(cap) {
+        return `${cap.width}x${cap.height}`;
+      }
+
+      function fpsValue(cap) {
+        return `${cap.fps_num}/${cap.fps_den}`;
+      }
+
+      function fpsLabel(cap) {
+        const fps = cap.fps_num / cap.fps_den;
+        return `${cap.fps_num}/${cap.fps_den} FPS (${fps.toFixed(2)})`;
+      }
+
+      async function loadCapabilities() {
+        stopStream();
+
+        const formatSelect = document.getElementById("formatSelect");
+        const resolutionSelect = document.getElementById("resolutionSelect");
+        const fpsSelect = document.getElementById("fpsSelect");
+        const connectBtn = document.getElementById("connectBtn");
+
+        formatSelect.disabled = true;
+        resolutionSelect.disabled = true;
+        fpsSelect.disabled = true;
+        connectBtn.disabled = true;
+
+        clearSelect(formatSelect, "Loading formats...");
+        clearSelect(resolutionSelect, "Choose video format first");
+        clearSelect(fpsSelect, "Choose resolution first");
+
+        setStatus(`Loading capabilities from ${serverUrl()} ...`);
+
+        try {
+          const response = await fetch(`${serverUrl()}/capabilities`);
+
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+
+          allCapabilities = await response.json();
+
+          if (!Array.isArray(allCapabilities) || allCapabilities.length === 0) {
+            throw new Error("No camera capabilities returned by server.");
+          }
+
+          allCapabilities.sort((a, b) => {
+            return (
+              String(a.format).localeCompare(String(b.format)) ||
+              String(a.media_type).localeCompare(String(b.media_type)) ||
+              a.width - b.width ||
+              a.height - b.height ||
+              a.fps_num - b.fps_num
+            );
+          });
+
+          populateFormats();
+
+          formatSelect.disabled = false;
+
+          setStatus(`Loaded ${allCapabilities.length} camera modes.`);
+          startMetricsPolling();
+        } catch (err) {
+          console.error(err);
+          setStatus(`Failed to load capabilities:\n${err.message}`);
+          clearSelect(formatSelect, "Failed to load formats");
+        }
+      }
+
+      function populateFormats() {
+        const formatSelect = document.getElementById("formatSelect");
+        const resolutionSelect = document.getElementById("resolutionSelect");
+        const fpsSelect = document.getElementById("fpsSelect");
+
+        clearSelect(formatSelect, "Choose video format");
+        clearSelect(resolutionSelect, "Choose video format first");
+        clearSelect(fpsSelect, "Choose resolution first");
+
+        const formats = uniqueBy(
+          allCapabilities,
+          (cap) =>
+            `${cap.media_type}|${cap.format}|${cap.fourcc}|${cap.description}`,
+        );
+
+        for (const cap of formats) {
+          const option = document.createElement("option");
+
+          option.value = JSON.stringify({
+            media_type: cap.media_type,
+            format: cap.format,
+            fourcc: cap.fourcc,
+            description: cap.description,
+            device: cap.device,
+          });
+
+          option.textContent = formatLabel(cap);
+          formatSelect.appendChild(option);
+        }
+
+        formatSelect.onchange = populateResolutions;
+        resolutionSelect.onchange = populateFps;
+      }
+
+      function selectedFormatFilter(cap) {
+        const selected = document.getElementById("formatSelect").value;
+        if (!selected) return false;
+
+        const fmt = JSON.parse(selected);
+
+        return (
+          cap.media_type === fmt.media_type &&
+          cap.format === fmt.format &&
+          cap.fourcc === fmt.fourcc &&
+          cap.description === fmt.description
+        );
+      }
+
+      function populateResolutions() {
+        const resolutionSelect = document.getElementById("resolutionSelect");
+        const fpsSelect = document.getElementById("fpsSelect");
+        const connectBtn = document.getElementById("connectBtn");
+
+        resolutionSelect.disabled = true;
+        fpsSelect.disabled = true;
+        connectBtn.disabled = true;
+
+        clearSelect(resolutionSelect, "Choose resolution");
+        clearSelect(fpsSelect, "Choose resolution first");
+
+        const capsForFormat = allCapabilities.filter(selectedFormatFilter);
+
+        const resolutions = uniqueBy(
+          capsForFormat,
+          (cap) => `${cap.width}x${cap.height}`,
+        ).sort((a, b) => {
+          return a.width * a.height - b.width * b.height;
+        });
+
+        for (const cap of resolutions) {
+          const option = document.createElement("option");
+
+          option.value = JSON.stringify({
+            width: cap.width,
+            height: cap.height,
+          });
+
+          option.textContent = resolutionLabel(cap);
+          resolutionSelect.appendChild(option);
+        }
+
+        resolutionSelect.disabled = resolutions.length === 0;
+      }
+
+      function selectedResolutionFilter(cap) {
+        if (!selectedFormatFilter(cap)) return false;
+
+        const selected = document.getElementById("resolutionSelect").value;
+        if (!selected) return false;
+
+        const res = JSON.parse(selected);
+
+        return cap.width === res.width && cap.height === res.height;
+      }
+
+      function populateFps() {
+        const fpsSelect = document.getElementById("fpsSelect");
+        const connectBtn = document.getElementById("connectBtn");
+
+        fpsSelect.disabled = true;
+        connectBtn.disabled = true;
+
+        clearSelect(fpsSelect, "Choose FPS");
+
+        const capsForResolution = allCapabilities.filter(
+          selectedResolutionFilter,
+        );
+
+        const fpsModes = uniqueBy(
+          capsForResolution,
+          (cap) => `${cap.fps_num}/${cap.fps_den}`,
+        ).sort((a, b) => {
+          return a.fps_num / a.fps_den - b.fps_num / b.fps_den;
+        });
+
+        for (const cap of fpsModes) {
+          const option = document.createElement("option");
+
+          option.value = JSON.stringify(cap);
+          option.textContent = fpsLabel(cap);
+
+          fpsSelect.appendChild(option);
+        }
+
+        fpsSelect.disabled = fpsModes.length === 0;
+        connectBtn.disabled = fpsModes.length === 0;
+
+        fpsSelect.onchange = () => {
+          connectBtn.disabled = !fpsSelect.value;
+        };
+      }
+
+      async function startStream() {
+        stopStream();
+
+        const fpsSelect = document.getElementById("fpsSelect");
+        const connectBtn = document.getElementById("connectBtn");
+        const stopBtn = document.getElementById("stopBtn");
+
+        if (!fpsSelect.value) {
+          setStatus("Please choose video format, resolution, and FPS first.");
+          return;
+        }
+
+        const selectedCap = JSON.parse(fpsSelect.value);
+
+        connectBtn.disabled = true;
+        stopBtn.disabled = false;
+        connectBtn.innerText = "Negotiating...";
+
+        setStatus(
+          `Starting stream:\n` +
+            `${selectedCap.format} / ${selectedCap.media_type}\n` +
+            `${selectedCap.width}x${selectedCap.height} @ ${selectedCap.fps_num}/${selectedCap.fps_den} FPS`,
+        );
+
+        try {
+          pc = new RTCPeerConnection();
+
+          pc.ontrack = (event) => {
+            document.getElementById("videoElement").srcObject =
+              event.streams[0];
+
+            connectBtn.innerText = "Connected";
+            document.getElementById("statsOverlay").style.display = "block";
+
+            setStatus("Stream connected.");
+            startStatsTracking();
+          };
+
+          pc.onconnectionstatechange = () => {
+            setStatus(`WebRTC state: ${pc.connectionState}`);
+
+            if (
+              pc.connectionState === "failed" ||
+              pc.connectionState === "closed" ||
+              pc.connectionState === "disconnected"
+            ) {
+              connectBtn.innerText = "Start Stream";
+              connectBtn.disabled = false;
+              stopBtn.disabled = true;
+            }
+          };
+
+          pc.addTransceiver("video", {
+            direction: "recvonly",
+          });
+
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+
+          const response = await fetch(`${serverUrl()}/offer`, {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              sdp: offer.sdp,
+
+              device: selectedCap.device,
+
+              media_type: selectedCap.media_type,
+              format: selectedCap.format,
+              fourcc: selectedCap.fourcc,
+
+              width: selectedCap.width,
+              height: selectedCap.height,
+
+              fps_num: selectedCap.fps_num,
+              fps_den: selectedCap.fps_den,
+            }),
+          });
+
+          if (!response.ok) {
+            throw new Error(`Offer failed with HTTP ${response.status}`);
+          }
+
+          const answer = await response.json();
+
+          await pc.setRemoteDescription(new RTCSessionDescription(answer));
+        } catch (err) {
+          console.error(err);
+
+          setStatus(`Failed to start stream:\n${err.message}`);
+
+          connectBtn.innerText = "Start Stream";
+          connectBtn.disabled = false;
+          stopBtn.disabled = true;
+
+          stopStream();
+        }
+      }
+
+      function stopStream() {
+        if (statsInterval) {
+          clearInterval(statsInterval);
+          statsInterval = null;
+        }
+
+        if (pc) {
+          pc.getSenders().forEach((sender) => {
+            if (sender.track) sender.track.stop();
+          });
+
+          pc.getReceivers().forEach((receiver) => {
+            if (receiver.track) receiver.track.stop();
+          });
+
+          pc.close();
+          pc = null;
+        }
+
+        const video = document.getElementById("videoElement");
+
+        if (video.srcObject) {
+          video.srcObject.getTracks().forEach((track) => track.stop());
+          video.srcObject = null;
+        }
+
+        document.getElementById("statsOverlay").style.display = "none";
+
+        document.getElementById("connectBtn").innerText = "Start Stream";
+        document.getElementById("connectBtn").disabled =
+          !document.getElementById("fpsSelect").value;
+        document.getElementById("stopBtn").disabled = true;
+      }
+
+      function startStatsTracking() {
+        if (statsInterval) {
+          clearInterval(statsInterval);
+        }
+
+        let lastStats = null;
+
+        statsInterval = setInterval(async () => {
+          if (!pc) return;
+
+          const stats = await pc.getStats();
+
+          let fps = 0;
+          let rtt = 0;
+          let jitter = 0;
+          let width = 0;
+          let height = 0;
+          let bitrateMbps = 0;
+
+          stats.forEach((stat) => {
+            if (stat.type === "inbound-rtp" && stat.kind === "video") {
+              if (lastStats && lastStats.has(stat.id)) {
+                const lastStat = lastStats.get(stat.id);
+
+                const framesDecoded =
+                  (stat.framesDecoded || 0) - (lastStat.framesDecoded || 0);
+
+                const bytesReceived =
+                  (stat.bytesReceived || 0) - (lastStat.bytesReceived || 0);
+
+                const timeDiff = (stat.timestamp - lastStat.timestamp) / 1000;
+
+                if (timeDiff > 0) {
+                  fps = Math.round(framesDecoded / timeDiff);
+                  bitrateMbps = (bytesReceived * 8) / timeDiff / 1000000;
+                }
+              }
+
+              if (stat.jitterBufferDelay && stat.jitterBufferEmittedCount) {
+                jitter =
+                  (stat.jitterBufferDelay / stat.jitterBufferEmittedCount) *
+                  1000;
+              }
+
+              if (stat.frameWidth && stat.frameHeight) {
+                width = stat.frameWidth;
+                height = stat.frameHeight;
+              }
+            }
+
+            if (
+              stat.type === "candidate-pair" &&
+              stat.state === "succeeded" &&
+              stat.currentRoundTripTime
+            ) {
+              rtt = stat.currentRoundTripTime * 1000;
+            }
+          });
+
+          lastStats = stats;
+
+          document.getElementById("fpsDisplay").innerText =
+            `Client FPS: ${fps}`;
+
+          document.getElementById("rttDisplay").innerText =
+            `Network RTT: ${rtt.toFixed(1)} ms`;
+
+          document.getElementById("jitterDisplay").innerText =
+            `Jitter Buffer: ${jitter.toFixed(1)} ms`;
+
+          document.getElementById("bitrateDisplay").innerText =
+            `Client Bitrate: ${bitrateMbps.toFixed(2)} Mbps`;
+
+          if (width && height) {
+            document.getElementById("resolutionDisplay").innerText =
+              `Resolution: ${width}x${height}`;
+          }
+        }, 1000);
+      }
+
+      function startMetricsPolling() {
+        if (metricsInterval) {
+          clearInterval(metricsInterval);
+        }
+
+        updateMetrics();
+
+        metricsInterval = setInterval(updateMetrics, 5000);
+      }
+
+      async function updateMetrics() {
+        try {
+          const response = await fetch(`${serverUrl()}/metrics`);
+
+          if (!response.ok) {
+            throw new Error(`HTTP ${response.status}`);
+          }
+
+          const m = await response.json();
+
+          document.getElementById("serverCpu").innerText =
+            `CPU: ${Number(m.cpu_percent || 0).toFixed(1)}%`;
+
+          document.getElementById("serverMemory").innerText =
+            `Memory RSS: ${Number(m.memory_rss_mb || 0).toFixed(1)} MB`;
+
+          document.getElementById("serverThreads").innerText =
+            `Threads: ${m.threads ?? "-"}`;
+
+          document.getElementById("serverPeers").innerText =
+            `Active Peer Connections: ${m.active_peer_connections ?? "-"}`;
+
+          document.getElementById("serverOutFps").innerText =
+            `Server Output FPS: ${Number(m.output_fps_recent || 0).toFixed(1)}`;
+
+          document.getElementById("serverOutMbps").innerText =
+            `Server Output Mbps: ${Number(m.output_mbps_recent || 0).toFixed(2)}`;
+
+          document.getElementById("serverFrames").innerText =
+            `Total Frames Sent: ${m.total_frames_sent ?? "-"}`;
+
+          document.getElementById("serverVideoMb").innerText =
+            `Total Video Sent: ${Number(m.total_video_mb_sent || 0).toFixed(1)} MB`;
+        } catch (err) {
+          document.getElementById("serverCpu").innerText =
+            `CPU: metrics unavailable`;
+        }
+      }
+
+      window.onload = () => {
+        document.getElementById("serverUrl").value = DEFAULT_SERVER;
+
+        clearSelect(
+          document.getElementById("formatSelect"),
+          "Click Load Camera first",
+        );
+        clearSelect(
+          document.getElementById("resolutionSelect"),
+          "Choose video format first",
+        );
+        clearSelect(
+          document.getElementById("fpsSelect"),
+          "Choose resolution first",
+        );
+
+        setStatus(`Ready. Server: ${DEFAULT_SERVER}`);
+      };
+    </script>
+  </body>
+</html>

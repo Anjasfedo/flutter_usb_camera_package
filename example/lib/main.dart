@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'dart:async';
-import 'dart:ui'; // Required for ImageFilter (Blur)
+import 'dart:ui';
 import 'package:flutter_usb_camera_package/flutter_usb_camera_package.dart';
 
 void main() {
@@ -38,7 +38,6 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
   final PageController _pageController = PageController();
   int _currentStep = 0;
 
-  // Data State
   List<dynamic> _devices = [];
   dynamic _selectedDevice;
   List<dynamic> _formats = [];
@@ -46,7 +45,6 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
   Map<dynamic, dynamic>? _selectedResolution;
   double? _selectedFps;
 
-  // Stream State
   int? _textureId;
   bool _isStreaming = false;
   double _currentFps = 0.0;
@@ -80,9 +78,14 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
       _isStreaming = false;
       _textureId = null;
       _currentStep = 0;
+      _selectedDevice = null;
+      _selectedFormat = null;
+      _selectedResolution = null;
+      _selectedFps = null;
     });
     _metricsTimer?.cancel();
     _pageController.jumpToPage(0);
+    _refreshDevices();
   }
 
   Future<void> _startStreaming() async {
@@ -123,7 +126,6 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
     return Scaffold(
       body: Stack(
         children: [
-          // 1. Background
           Positioned.fill(
             child: Container(
               decoration: const BoxDecoration(
@@ -135,8 +137,6 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
               ),
             ),
           ),
-
-          // 2. The Video Stream
           if (_isStreaming && _textureId != null)
             Positioned.fill(
               child: Center(
@@ -146,12 +146,9 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
                 ),
               ),
             ),
-
-          // 3. UI LAYER: Wrap the Switcher in Positioned.fill
           Positioned.fill(
             child: AnimatedSwitcher(
               duration: const Duration(milliseconds: 500),
-              // Important for position/size transitions
               layoutBuilder:
                   (Widget? currentChild, List<Widget> previousChildren) {
                     return Stack(
@@ -172,9 +169,8 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
 
   Widget _buildOnboardingWizard() {
     return Container(
-      // Changed from Positioned.fill
       key: const ValueKey('onboarding'),
-      color: Colors.transparent, // Or your glassmorphism logic
+      color: Colors.transparent,
       child: SafeArea(
         child: Column(
           children: [
@@ -192,6 +188,7 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
                     title: "Hardware",
                     subtitle: "Scan and select your USB device",
                     items: _devices,
+                    showRefresh: true, // Specific flag for the first page
                     onSelect: (val) async {
                       _selectedDevice = val;
                       _formats = await _cameraPlugin.getCameraMetadata(val);
@@ -243,6 +240,7 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
+          // Back Button
           _currentStep > 0
               ? IconButton(
                   onPressed: _prevPage,
@@ -250,7 +248,27 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
                   style: IconButton.styleFrom(backgroundColor: Colors.white10),
                 )
               : const SizedBox(width: 40),
-          const SizedBox(width: 40),
+          const Text(
+            "WIZARD",
+            style: TextStyle(
+              letterSpacing: 4,
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+              color: Colors.cyanAccent,
+            ),
+          ),
+          // Top Refresh Button (Only on Step 0)
+          _currentStep == 0
+              ? IconButton(
+                  onPressed: _refreshDevices,
+                  icon: const Icon(
+                    Icons.refresh,
+                    size: 20,
+                    color: Colors.cyanAccent,
+                  ),
+                  style: IconButton.styleFrom(backgroundColor: Colors.white10),
+                )
+              : const SizedBox(width: 40),
         ],
       ),
     );
@@ -265,7 +283,7 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
         return AnimatedContainer(
           duration: const Duration(milliseconds: 300),
           margin: const EdgeInsets.symmetric(horizontal: 4),
-          height: 6,
+          height: 4,
           width: active ? 30 : 6,
           decoration: BoxDecoration(
             color: active
@@ -273,7 +291,7 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
                 : (completed
                       ? Colors.cyanAccent.withOpacity(0.3)
                       : Colors.white10),
-            borderRadius: BorderRadius.circular(3),
+            borderRadius: BorderRadius.circular(2),
           ),
         );
       }),
@@ -286,6 +304,7 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
     required List<dynamic>? items,
     required Function(dynamic) onSelect,
     String Function(dynamic)? label,
+    bool showRefresh = false,
   }) {
     return Padding(
       padding: const EdgeInsets.all(32.0),
@@ -310,10 +329,17 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
           const SizedBox(height: 30),
           Expanded(
             child: ListView.separated(
-              itemCount: items?.length ?? 0,
+              itemCount: (items?.length ?? 0) + (showRefresh ? 1 : 0),
               separatorBuilder: (_, __) => const SizedBox(height: 12),
               itemBuilder: (context, index) {
-                final item = items![index];
+                // If showRefresh is true, put a "Scan for Devices" tile at the top
+                if (showRefresh && index == 0) {
+                  return _buildRefreshTile();
+                }
+
+                final actualIndex = showRefresh ? index - 1 : index;
+                final item = items![actualIndex];
+
                 return ClipRRect(
                   borderRadius: BorderRadius.circular(16),
                   child: BackdropFilter(
@@ -347,16 +373,45 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
     );
   }
 
+  Widget _buildRefreshTile() {
+    return InkWell(
+      onTap: _refreshDevices,
+      borderRadius: BorderRadius.circular(16),
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          border: Border.all(color: Colors.cyanAccent.withOpacity(0.2)),
+          borderRadius: BorderRadius.circular(16),
+          color: Colors.cyanAccent.withOpacity(0.02),
+        ),
+        child: const Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.sync, color: Colors.cyanAccent, size: 18),
+            SizedBox(width: 10),
+            Text(
+              "SCAN FOR NEW HARDWARE",
+              style: TextStyle(
+                color: Colors.cyanAccent,
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 1,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   Widget _buildHUD() {
     return SizedBox.expand(
-      // Changed from Positioned.fill
       key: const ValueKey('hud'),
       child: SafeArea(
         child: Padding(
           padding: const EdgeInsets.all(24.0),
           child: Column(
             children: [
-              // TOP METRICS OVERLAY (Glass)
               ClipRRect(
                 borderRadius: BorderRadius.circular(50),
                 child: BackdropFilter(
@@ -396,7 +451,6 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
                 ),
               ),
               const Spacer(),
-              // BOTTOM STATUS
               Align(
                 alignment: Alignment.bottomLeft,
                 child: Container(

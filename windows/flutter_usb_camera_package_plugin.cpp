@@ -128,6 +128,85 @@ namespace flutter_usb_camera_package
       gst_object_unref(monitor);
       result->Success(flutter::EncodableValue(devices));
     }
+
+    else if (method_call.method_name().compare("getCameraMetadata") == 0)
+    {
+      const auto *args = std::get_if<flutter::EncodableMap>(method_call.arguments());
+      std::string target_name = std::get<std::string>(args->at(flutter::EncodableValue("device")));
+
+      flutter::EncodableList formats_list;
+      GstDeviceMonitor *monitor = gst_device_monitor_new();
+      gst_device_monitor_add_filter(monitor, "Video/Source", NULL);
+      GList *gst_devices = gst_device_monitor_get_devices(monitor);
+
+      for (GList *l = gst_devices; l != NULL; l = l->next)
+      {
+        GstDevice *device = (GstDevice *)l->data;
+        gchar *name = gst_device_get_display_name(device);
+
+        if (target_name == std::string(name))
+        {
+          GstCaps *caps = gst_device_get_caps(device);
+          if (caps)
+          {
+            // Map to store resolutions per format to group them
+            // Format Name -> Map of "widthxheight" -> List of FPS
+            std::map<std::string, std::map<std::string, std::vector<double>>> structure_map;
+
+            for (guint i = 0; i < gst_caps_get_size(caps); i++)
+            {
+              GstStructure *s = gst_caps_get_structure(caps, i);
+              const gchar *format_name = gst_structure_get_string(s, "format");
+              if (!format_name)
+                format_name = gst_structure_get_name(s); // Handle image/jpeg
+
+              int width, height;
+              if (gst_structure_get_int(s, "width", &width) && gst_structure_get_int(s, "height", &height))
+              {
+                std::string res_key = std::to_string(width) + "x" + std::to_string(height);
+
+                const GValue *fr = gst_structure_get_value(s, "framerate");
+                if (GST_VALUE_HOLDS_FRACTION(fr))
+                {
+                  double fps = (double)gst_value_get_fraction_numerator(fr) / gst_value_get_fraction_denominator(fr);
+                  structure_map[format_name][res_key].push_back(fps);
+                }
+              }
+            }
+
+            // Convert our internal map to Flutter Encodable types
+            for (auto const &[fmt, res_map] : structure_map)
+            {
+              flutter::EncodableMap format_entry;
+              format_entry[flutter::EncodableValue("format")] = flutter::EncodableValue(fmt);
+
+              flutter::EncodableList resolutions_list;
+              for (auto const &[res, fps_vec] : res_map)
+              {
+                flutter::EncodableMap res_entry;
+                size_t x_pos = res.find('x');
+                res_entry[flutter::EncodableValue("width")] = flutter::EncodableValue(std::stoi(res.substr(0, x_pos)));
+                res_entry[flutter::EncodableValue("height")] = flutter::EncodableValue(std::stoi(res.substr(x_pos + 1)));
+
+                flutter::EncodableList fps_list;
+                for (double f : fps_vec)
+                  fps_list.push_back(flutter::EncodableValue(f));
+                res_entry[flutter::EncodableValue("fps")] = flutter::EncodableValue(fps_list);
+
+                resolutions_list.push_back(flutter::EncodableValue(res_entry));
+              }
+              format_entry[flutter::EncodableValue("resolutions")] = flutter::EncodableValue(resolutions_list);
+              formats_list.push_back(flutter::EncodableValue(format_entry));
+            }
+            gst_caps_unref(caps);
+          }
+        }
+        g_free(name);
+      }
+      g_list_free_full(gst_devices, gst_object_unref);
+      gst_object_unref(monitor);
+      result->Success(flutter::EncodableValue(formats_list));
+    }
     else if (method_call.method_name().compare("startStream") == 0)
     {
       const auto *args = std::get_if<flutter::EncodableMap>(method_call.arguments());
