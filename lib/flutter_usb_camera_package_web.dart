@@ -19,15 +19,15 @@ class FlutterUsbCameraPackageWeb extends FlutterUsbCameraPackagePlatform {
   @override
   Future<List<dynamic>> listDevices() async {
     try {
-      final devices = await web.window.navigator.mediaDevices
+      final devicesJS = await web.window.navigator.mediaDevices
           .enumerateDevices()
           .toDart;
+      final devices = devicesJS.toDart;
       final labels = <String>[];
       _labelToId.clear();
 
-      for (var i = 0; i < devices.length; i++) {
-        final device = devices.item(i);
-        if (device != null && device.kind == 'videoinput') {
+      for (final device in devices) {
+        if (device.kind == 'videoinput') {
           final label = device.label.isEmpty
               ? "Camera ${device.deviceId}"
               : device.label;
@@ -79,7 +79,8 @@ class FlutterUsbCameraPackageWeb extends FlutterUsbCameraPackagePlatform {
     final viewType = 'usb-camera-view-$viewId';
     final deviceId = _labelToId[device.toString()];
 
-    final videoConstraints = {
+    // Explicitly define as Map<String, dynamic> to allow String (deviceId) and num (width)
+    final Map<String, dynamic> videoConstraints = {
       'width': {'ideal': width},
       'height': {'ideal': height},
       'frameRate': {'ideal': fps},
@@ -122,9 +123,8 @@ class FlutterUsbCameraPackageWeb extends FlutterUsbCameraPackagePlatform {
   Future<void> stopStream() async {
     for (var stream in _streams.values) {
       final tracks = stream.getTracks().toDart;
-      for (var i = 0; i < tracks.length; i++) {
-        final track = tracks.item(i);
-        track?.stop();
+      for (final track in tracks) {
+        track.stop();
       }
     }
     _streams.clear();

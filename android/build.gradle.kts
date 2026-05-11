@@ -28,7 +28,6 @@ plugins {
 
 android {
     namespace = "com.example.flutter_usb_camera_package"
-
     compileSdk = 36
 
     compileOptions {
@@ -43,29 +42,39 @@ android {
     sourceSets {
         getByName("main") {
             java.srcDirs("src/main/kotlin")
-        }
-        getByName("test") {
-            java.srcDirs("src/test/kotlin")
+            // This ensures Gradle sees your C/C++ files
+            jni.srcDirs("src/main/jni")
         }
     }
 
-    defaultConfig {
+defaultConfig {
         minSdk = 24
+
+        ndk {
+            abiFilters.addAll(listOf("armeabi-v7a", "arm64-v8a", "x86_64"))
+        }
+
+        externalNativeBuild {
+            ndkBuild {
+                // 1. THIS IS THE MAGIC LINE:
+                // Tell Gradle to only monitor our final engine library.
+                targets("usb_camera_engine") 
+
+                // 2. Keep your existing path logic
+                val rawPath = System.getenv("GSTREAMER_ROOT_ANDROID") 
+                    ?: "C:/gstreamer-1.0-android-universal-1.28.2"
+                
+                val gstRoot = rawPath.replace("\\", "/")
+                
+                arguments("GSTREAMER_ROOT_ANDROID=$gstRoot")
+            }
+        }
     }
 
-    testOptions {
-        unitTests {
-            isIncludeAndroidResources = true
-            all {
-                it.useJUnitPlatform()
-
-                it.outputs.upToDateWhen { false }
-
-                it.testLogging {
-                    events("passed", "skipped", "failed", "standardOut", "standardError")
-                    showStandardStreams = true
-                }
-            }
+    // 3. Point to your Android.mk file
+    externalNativeBuild {
+        ndkBuild {
+            path = file("src/main/jni/Android.mk")
         }
     }
 }

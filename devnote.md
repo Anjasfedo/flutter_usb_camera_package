@@ -1,0 +1,1 @@
+& "C:\Users\user\AppData\Local\Android\Sdk\ndk\27.0.12077973\ndk-build.cmd" NDK_PROJECT_PATH=.. APP_BUILD_SCRIPT=Android.mk NDK_APPLICATION_MK=Application.mk GSTREAMER_ROOT_ANDROID=C:/gstreamer-1.0-android-universal-1.28.2 APP_ABI=arm64-v8a

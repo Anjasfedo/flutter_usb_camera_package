@@ -3,6 +3,7 @@ import 'dart:async';
 import 'dart:ui';
 import 'package:flutter_usb_camera_package/flutter_usb_camera_package.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
+import 'package:permission_handler/permission_handler.dart'; // Added import
 
 void main() {
   runApp(const MyApp());
@@ -59,15 +60,38 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
     _refreshDevices();
   }
 
-  // 1. Refresh hardware list
+  // 1. Refresh hardware list (UPDATED with Permission logic)
   Future<void> _refreshDevices() async {
-    try {
-      final devices = await _cameraPlugin.listDevices();
-      setState(() {
-        _devices = devices.toSet().toList(); // Force unique names
-      });
-    } catch (e) {
-      debugPrint("Device Scan Error: $e");
+    var status = await Permission.camera.request();
+
+    if (status.isGranted) {
+      try {
+        final devices = await _cameraPlugin.listDevices();
+        setState(() {
+          _devices = devices.toSet().toList(); // Force unique names
+        });
+
+        if (devices.isEmpty && mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text("No USB devices found. Ensure OTG is enabled."),
+            ),
+          );
+        }
+      } catch (e) {
+        debugPrint("Device Scan Error: $e");
+      }
+    } else {
+      debugPrint("Camera permission denied.");
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              "Camera permission is required to detect USB devices.",
+            ),
+          ),
+        );
+      }
     }
   }
 
@@ -235,8 +259,7 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
                     title: "Hardware",
                     subtitle: "Select your active USB device",
                     items: _devices,
-                    onSelect: (val) =>
-                        _fetchMetadata(val), // Now calls the separate function
+                    onSelect: (val) => _fetchMetadata(val),
                   ),
                   _buildSelectionPage(
                     title: "Encoding",
@@ -276,8 +299,6 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
       ),
     );
   }
-
-  // --- UI Helper Widgets (Header, HUD, Metric Chips, etc) ---
 
   Widget _buildHeader() {
     return Padding(
