@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'dart:async';
 import 'dart:ui';
 import 'package:flutter_usb_camera_package/flutter_usb_camera_package.dart';
+import 'package:flutter/foundation.dart' show kIsWeb;
 
 void main() {
   runApp(const MyApp());
@@ -142,7 +143,9 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
               child: Center(
                 child: AspectRatio(
                   aspectRatio: _width > 0 ? _width / _height : 16 / 9,
-                  child: Texture(textureId: _textureId!),
+                  child: kIsWeb
+                      ? HtmlElementView(viewType: 'usb-camera-view-$_textureId')
+                      : Texture(textureId: _textureId!),
                 ),
               ),
             ),
