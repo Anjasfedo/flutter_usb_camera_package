@@ -123,7 +123,7 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
     return Scaffold(
       body: Stack(
         children: [
-          // 1. BACKGROUND LAYER: Deep Gradient Mesh
+          // 1. Background
           Positioned.fill(
             child: Container(
               decoration: const BoxDecoration(
@@ -136,7 +136,7 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
             ),
           ),
 
-          // 2. MIDDLE LAYER: The Video Stream (Floating)
+          // 2. The Video Stream
           if (_isStreaming && _textureId != null)
             Positioned.fill(
               child: Center(
@@ -147,10 +147,23 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
               ),
             ),
 
-          // 3. UI LAYER: Onboarding or HUD
-          AnimatedSwitcher(
-            duration: const Duration(milliseconds: 500),
-            child: !_isStreaming ? _buildOnboardingWizard() : _buildHUD(),
+          // 3. UI LAYER: Wrap the Switcher in Positioned.fill
+          Positioned.fill(
+            child: AnimatedSwitcher(
+              duration: const Duration(milliseconds: 500),
+              // Important for position/size transitions
+              layoutBuilder:
+                  (Widget? currentChild, List<Widget> previousChildren) {
+                    return Stack(
+                      alignment: Alignment.center,
+                      children: <Widget>[
+                        ...previousChildren,
+                        if (currentChild != null) currentChild,
+                      ],
+                    );
+                  },
+              child: !_isStreaming ? _buildOnboardingWizard() : _buildHUD(),
+            ),
           ),
         ],
       ),
@@ -159,7 +172,9 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
 
   Widget _buildOnboardingWizard() {
     return Container(
+      // Changed from Positioned.fill
       key: const ValueKey('onboarding'),
+      color: Colors.transparent, // Or your glassmorphism logic
       child: SafeArea(
         child: Column(
           children: [
@@ -333,7 +348,8 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
   }
 
   Widget _buildHUD() {
-    return Positioned.fill(
+    return SizedBox.expand(
+      // Changed from Positioned.fill
       key: const ValueKey('hud'),
       child: SafeArea(
         child: Padding(
@@ -365,8 +381,6 @@ class _CameraOnboardingPageState extends State<CameraOnboardingPage> {
                           "${_width}x$_height",
                           Colors.cyanAccent,
                         ),
-                        const SizedBox(width: 8),
-                        _metricChip("LINK", "STABLE", Colors.orangeAccent),
                         const SizedBox(width: 8),
                         IconButton(
                           onPressed: _reset,
